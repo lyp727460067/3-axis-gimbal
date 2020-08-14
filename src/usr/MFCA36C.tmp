@@ -1,0 +1,217 @@
+#define DEFIN_EULER_EXTERN
+#include "EulerQuaternion.h"
+#include  "datacalibrate.h"
+#include "arm_math.h"
+#include "kalman.h"
+#include "CORDIC_math.h"
+#include "time.h"
+tKalman KalmanRoll;
+tKalman KalmanPitch;
+float expv[]= {
+0.81873f,0.67032f,0.54881f,0.44932f,0.36787f,0.30119f,
+0.24659f,0.20189f,0.16529f,0.13533f,0.11080f,0.09071f,
+0.07427f,0.06081f,0.04978f,0.04076f,0.03337f,0.02732f,
+0.02237f,0.01831f,0.01499f,0.01227f,0.01005f,0.00822f,
+0.00673f,0.00551f,0.00451f,0.00369f,0.00302f,0.002478,
+0.001,0.0005
+};
+
+u8 InitStates = 0;
+float InitYaw = 0.0f;
+void AhrsFixPra(float*  Mpu);
+
+extern void Get_Delat(void);
+PrecisionTime_Type Delta_time;
+
+static float roll,pitch,yaw;
+
+/*
+*/
+void qtoe(void)
+{
+	roll   = -CORDIC_atan2(2.0f * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 +q3 * q3);   
+	pitch  = -CORDIC_asin(-2.0f * (q1 * q3 -q0 * q2));
+	yaw    = -CORDIC_atan2(2.0f * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 -q3 * q3);
+}
+
+/*
+*/
+
+void set_eul_fix_para(uint8_t index)
+{
+    InitStates  = index;
+}
+/*
+>=70US 总共耗时 <=92US
+*/
+float  KalmanFilterEuler(float * mpu);
+extern void  get_mpu_avgrt(float* tem);
+void get_euler_quaternion(void)
+{   
+    static uint8_t FusionConter = 0;
+    Senseordata_Type   Sensordatatemp;    
+    get_mpu_avgrt(&Sensordata.ax);
+    Sensordatatemp.gx =  Sensordata.gx *(0.0174536f);
+	Sensordatatemp.gy =	 Sensordata.gz *(0.0174536f);
+	Sensordatatemp.gz = -Sensordata.gy *(0.0174536f);
+    
+    Sensordatatemp.ax =  Sensordata.ax/4096.f;
+    Sensordatatemp.ay =  Sensordata.az/4096.f;
+    Sensordatatemp.az = -Sensordata.ay/4096.f;	
+
+     deltat  = Get_Time_s(&Delta_time);
+
+   
+    Sensordata.ax = Sensordata.ax/4096.f;
+    Sensordata.ay = Sensordata.ay/4096.f;
+    Sensordata.az = Sensordata.az/4096.f;
+    
+    
+	#ifndef MadgwickAHRS
+	MahonyAHRSupdateIMU(&Sensordatatemp);
+	#else  
+	MadgwickAHRSupdateIMU(&Sensordatatemp);
+	#endif	
+	qtoe();
+    if(InitStates){
+        roll = KalmanFilterEuler(&Sensordata.ax);
+       //AhrsFixPra((void*)&Sensordata);
+	}
+	Sensordata.yaw =  yaw;	
+	Sensordata.pitch = pitch;	 
+	Sensordata.roll =  roll;
+}
+/*
+*beta = 0.05 的时候 零偏偏掉0-3°可拉回来
+*/
+float  KalmanFilterEuler(float * mpu)
+{
+    
+    float ax = mpu[0];
+    float ay = mpu[1];
+    float az = mpu[2];
+    
+    float recipNorm = sqrt(ax * ax + ay * ay + az * az );
+    ax /= recipNorm;
+	ay /= recipNorm;
+	az /= recipNorm; 
+
+	float rolltemp = CORDIC_atan2(az ,-ay);
+    yaw = rolltemp;
+    
+    //pitch = CORDIC_asin(ax);
+    float  In = deltat* mpu[3];
+    
+   return  KalmanFilter(&KalmanRoll,rolltemp,In);
+}
+#define GRA_THROHOLD    409   //1/10*g
+
+
+int32_t OldMpuGra[256];
+int32_t OldMpuGraFliter;
+uint8_t FirstMpuGraPtr;
+float  MpuGraAvg ;
+int32_t graAvg;
+void AhrsFixPra(float*   Mpu)
+{
+    
+    int64_t graSum = 0;
+    uint8_t expIndex = 0;
+    uint8_t overThrohold = 0;
+    int32_t index = 0;
+    
+    for(int i=0 ;i<3;i++){
+        graSum +=Mpu[i]*Mpu[i];
+    }
+    int32_t Gra = sqrt(graSum);
+    
+  //取重力加速的平均值
+    MpuGraAvg += Gra/256.f;
+    MpuGraAvg -= OldMpuGra[FirstMpuGraPtr]/256.f;
+    OldMpuGra[FirstMpuGraPtr++] = Gra;  
+    
+     graAvg = MpuGraAvg;
+    
+    if(graAvg>= 4096 + GRA_THROHOLD){
+        index = graAvg - 4096 - GRA_THROHOLD; 
+        overThrohold = 1;
+    }
+    if(graAvg <= 4096 - GRA_THROHOLD){
+        index= 4096 - GRA_THROHOLD  - graAvg ;   
+        overThrohold = 1;
+    }
+    if(overThrohold){
+        expIndex =  index >>8;;
+        if(expIndex>=18)expIndex = 18;
+        twoKp =  1.1f*expv[expIndex];
+        twoKi = 0.005f;
+        //twoKi = 0.5f*expv[expIndex];
+        beta = 0.05f*expv[expIndex];   
+    }else {
+        beta = 0.05f; 
+        twoKp =  1.1f;
+        twoKi = 0.005f;
+    } 
+    
+}
+/*
+*/
+uint32_t Conter = 0;
+float RollCov = 0;
+float PitchCov = 0;
+double SumRollCov = 0;
+double SumPichCov = 0;
+
+uint8_t  Init_ulerquaternion()//y-->pitch   x-->roll
+{
+	float ax,ay,az,recipNorm;
+	float sineroll,cosroll,sinepitch,cospitch;  
+	
+//	get_mpu_avgrt(Mpu);	
+    Conter++;
+    ax  = Sensordata.ax;
+    ay  = Sensordata.ay;
+    az  = Sensordata.az;
+	recipNorm = sqrt(ax * ax + ay * ay + az * az );
+	ax /= recipNorm;
+	ay /= recipNorm;
+	az /= recipNorm;   
+    
+	roll = CORDIC_atan2(az ,-ay);
+    pitch = CORDIC_asin(ax);
+    
+    if(Conter<=3000){
+        SumRollCov +=roll;
+        SumPichCov +=pitch;
+    }else{
+        
+    
+    }
+    
+	arm_sin_cos_f32(0.5f*roll,&sineroll,&cosroll);
+	arm_sin_cos_f32(0.5f*pitch,&sinepitch,&cospitch);
+    
+	q0 =    cospitch*cosroll ;  //w//  calculate the result is negative   
+	q1 =    sineroll*cospitch  ; //x 
+	q2 =    cosroll*sinepitch; //y  
+	q3 =    sineroll*sinepitch;  //z 
+	
+	recipNorm = sqrt(q0 * q0 + q1 * q1 + q2 * q2 + q3 * q3);
+	q0 /= recipNorm;  
+	q1 /= recipNorm;
+	q2 /= recipNorm;
+	q3 /= recipNorm;	
+    beta = 5.5f;
+    twoKp =  1.1f;
+    twoKi = 0.0f;
+    roll   = -CORDIC_atan2(2.0f * (q2 * q3 + q0 * q1), q0 * q0 - q1 * q1 - q2 * q2 +q3 * q3);   
+	pitch  = -CORDIC_asin(-2.0f * (q1 * q3 -q0 * q2));
+	//yaw    = -CORDIC_atan2(2.0f * (q1 * q2 + q0 * q3), q0 * q0 + q1 * q1 - q2 * q2 -q3 * q3);
+	Sensordata.pitch = pitch;	 
+	Sensordata.roll =  roll;
+    KalmanInit(&KalmanRoll,0.00001f,0.1f);
+    KalmanInit(&KalmanPitch,0.00001f,0.1f);
+//InitStates=1;
+}
+
+

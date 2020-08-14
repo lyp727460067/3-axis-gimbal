@@ -1,0 +1,37 @@
+#ifndef CONTROL_H
+#define CONTROL_H
+
+#include "commonvalue.h"
+
+#ifdef  DEFIN_CONTROL_EXTERN
+	#define  CONTROL_EXTERN
+#else 
+	#define  CONTROL_EXTERN extern 
+#endif
+
+
+/*
+	g_ucUpdatePra
+	0 默认更新参数
+	1 从flash更新
+	2 上位机更新
+*/	
+typedef enum {
+	 FROM_DEFAULT,
+	 FROM_FLASH,
+	 FORM_DEBUG,
+}UpdatePraState_t;
+CONTROL_EXTERN UpdatePraState_t g_emUpdatePra;	
+	
+CONTROL_EXTERN  CurrentType 	 Ibase;
+CONTROL_EXTERN  CurrentType		ADCCurrent;
+CONTROL_EXTERN  ThrCurrent_type	 globleCurrentdebug ;	
+CONTROL_EXTERN   Positon_type  Positon;
+	
+void Control_Init(void);
+void Control(u8 Speed);
+void PWM_Circl(void);
+void Chage_Control(void);	
+#endif
+	
+	
